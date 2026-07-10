@@ -1,0 +1,18 @@
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+
+# Never bake secrets or a local DB into the image
+.env
+*.db
+*.sqlite3
+
+# Local caches / logs
+.cache/
+*.log
+.DS_Store

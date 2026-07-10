@@ -1,0 +1,26 @@
+# --- Web framework ---
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+python-multipart==0.0.17      # file uploads
+pydantic==2.10.3
+pydantic-settings==2.6.1
+
+# --- Summarization model (BART via HuggingFace) ---
+transformers==4.46.3
+torch==2.5.1                  # CPU build is fine for a demo; see README
+sentencepiece==0.2.0
+
+# --- Entity / keyword extraction ---
+spacy==3.8.2
+# The en_core_web_sm model is installed separately, see README:
+#   python -m spacy download en_core_web_sm
+
+# --- Contextual retrieval (Wikipedia) ---
+requests==2.32.3
+
+# --- Document text extraction (uploads) ---
+pypdf==5.1.0                  # .pdf
+python-docx==1.1.2            # .docx
+
+# --- Database (SQLite via SQLAlchemy, zero-config for the demo) ---
+SQLAlchemy==2.0.36
