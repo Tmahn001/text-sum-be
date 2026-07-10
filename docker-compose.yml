@@ -12,7 +12,7 @@ services:
       SUMMARIZER_MODEL: ${SUMMARIZER_MODEL:-sshleifer/distilbart-cnn-12-6}
       WARMUP_MODEL: "1"
       DATABASE_URL: sqlite:////app/data/submissions.db
-      CORS_ORIGINS: ${CORS_ORIGINS:-["http://localhost:5173"]}
+      CORS_ORIGINS: ${CORS_ORIGINS:-["http://localhost:5173", "https://text-sum.vercel.app"]}
     volumes:
       - ./data:/app/data
     healthcheck:
