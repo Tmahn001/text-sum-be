@@ -1,0 +1,23 @@
+services:
+  backend:
+    build:
+      context: .
+      args:
+        SUMMARIZER_MODEL: ${SUMMARIZER_MODEL:-sshleifer/distilbart-cnn-12-6}
+    image: contextual-summarizer-backend
+    restart: unless-stopped
+    ports:
+      - "8791:8000"
+    environment:
+      SUMMARIZER_MODEL: ${SUMMARIZER_MODEL:-sshleifer/distilbart-cnn-12-6}
+      WARMUP_MODEL: "1"
+      DATABASE_URL: sqlite:////app/data/submissions.db
+      CORS_ORIGINS: ${CORS_ORIGINS:-["http://localhost:5173"]}
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
