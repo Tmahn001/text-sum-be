@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     # BART's positional embeddings cap the encoder at 1024 tokens. Longer inputs
     # are split into chunks (see summarizer.py).
     max_input_tokens: int = 1024
+    # Upper bound on chunks summarized per document (evenly sampled). Each chunk
+    # takes ~10-15s on a small CPU server; 0 disables the cap.
+    max_chunks: int = 8
     # Target length of the generated summary, in tokens. These are intentionally
     # generous so the summary is a few informative sentences, not a one-liner.
     summary_min_length: int = 90

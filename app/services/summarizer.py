@@ -16,6 +16,7 @@ Design notes (for the defense):
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from functools import lru_cache
 
 from ..config import get_settings
@@ -76,17 +77,43 @@ def _summarize_one(pipe, text: str) -> str:
     return result[0]["summary_text"].strip()
 
 
-def summarize(text: str) -> str:
-    """Summarize arbitrary-length text and return a single summary string."""
+def _sample_evenly(chunks: list[str], limit: int) -> list[str]:
+    """Keep at most `limit` chunks, spread evenly from start to end of the document.
+
+    On a CPU-only server each chunk costs ~10-15s, so a 40-chunk document would
+    take ~10 minutes. Sampling evenly bounds the cost while still covering the
+    beginning, middle and end of the text.
+    """
+    if limit <= 0 or len(chunks) <= limit:
+        return chunks
+    if limit == 1:
+        return chunks[:1]
+    step = (len(chunks) - 1) / (limit - 1)
+    return [chunks[round(i * step)] for i in range(limit)]
+
+
+def summarize(text: str, on_progress: Callable[[int, int], None] | None = None) -> str:
+    """Summarize arbitrary-length text and return a single summary string.
+
+    `on_progress(done, total)` is called as chunks complete, so a background job
+    can report progress to the frontend.
+    """
     text = text.strip()
     if not text:
         return ""
 
     pipe = _get_pipeline()
-    chunks = _chunk_by_tokens(text, pipe.tokenizer, settings.max_input_tokens)
+    all_chunks = _chunk_by_tokens(text, pipe.tokenizer, settings.max_input_tokens)
+    chunks = _sample_evenly(all_chunks, settings.max_chunks)
 
-    logger.info("Summarizing in %d chunk(s)", len(chunks))
-    chunk_summaries = [_summarize_one(pipe, chunk) for chunk in chunks]
+    logger.info("Summarizing in %d chunk(s) (of %d)", len(chunks), len(all_chunks))
+    # +1 for the final map-reduce pass when there are several chunks.
+    total = len(chunks) + (1 if len(chunks) > 1 else 0)
+    chunk_summaries = []
+    for chunk in chunks:
+        chunk_summaries.append(_summarize_one(pipe, chunk))
+        if on_progress:
+            on_progress(len(chunk_summaries), total)
 
     if len(chunk_summaries) == 1:
         return chunk_summaries[0]

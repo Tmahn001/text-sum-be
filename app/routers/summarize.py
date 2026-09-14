@@ -9,13 +9,15 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
-from ..database import Submission, get_db
+from ..database import SessionLocal, Submission, get_db
 from ..schemas import (
     HistoryItem,
+    JobStatus,
     SummarizeRequest,
     SummarizeResponse,
 )
 from ..services import entities as entities_service
+from ..services import jobs as jobs_service
 from ..services import summarizer as summarizer_service
 from ..services import wikipedia as wikipedia_service
 from ..services.extract_text import extract_text
@@ -25,7 +27,7 @@ settings = get_settings()
 router = APIRouter()
 
 
-def _run_pipeline(text: str, db: Session) -> SummarizeResponse:
+def _run_pipeline(text: str, db: Session, on_progress=None) -> SummarizeResponse:
     """The core pipeline: summarize -> extract entities -> retrieve -> persist.
 
     This is the single place where the two independent pipelines (summarization
@@ -37,7 +39,7 @@ def _run_pipeline(text: str, db: Session) -> SummarizeResponse:
         raise HTTPException(status_code=400, detail="Input text is empty.")
 
     # 1. Abstractive summary (BART).
-    summary = summarizer_service.summarize(text)
+    summary = summarizer_service.summarize(text, on_progress=on_progress)
 
     # 2. Identify key entities/topics, then 3. retrieve context for them.
     #    Both run on the original text so retrieval isn't limited by what the
@@ -79,7 +81,11 @@ async def summarize_upload(
     file: UploadFile = File(...), db: Session = Depends(get_db)
 ):
     """Summarize an uploaded document (.txt, .md, .pdf, .docx)."""
-    data = await file.read()
+    text = _extract_upload(file, await file.read())
+    return _run_pipeline(text, db)
+
+
+def _extract_upload(file: UploadFile, data: bytes) -> str:
     try:
         text = extract_text(file.filename or "", data)
     except ValueError as exc:
@@ -88,7 +94,55 @@ async def summarize_upload(
         raise HTTPException(
             status_code=400, detail="Could not extract any text from the file."
         )
-    return _run_pipeline(text, db)
+    return text
+
+
+def _start_job(text: str) -> JobStatus:
+    """Run the pipeline in the background with its own DB session."""
+    if not text.strip():
+        raise HTTPException(status_code=400, detail="Input text is empty.")
+
+    def work(on_progress):
+        db = SessionLocal()
+        try:
+            return _run_pipeline(text, db, on_progress=on_progress)
+        finally:
+            db.close()
+
+    return _job_status(jobs_service.submit(work))
+
+
+def _job_status(job: jobs_service.Job) -> JobStatus:
+    return JobStatus(
+        id=job.id,
+        status=job.status,
+        progress_done=job.progress_done,
+        progress_total=job.progress_total,
+        result=job.result,
+        error=job.error,
+    )
+
+
+@router.post("/jobs", response_model=JobStatus, status_code=202)
+def start_text_job(payload: SummarizeRequest):
+    """Start summarizing pasted text in the background; poll GET /jobs/{id}."""
+    return _start_job(payload.text)
+
+
+@router.post("/jobs/upload", response_model=JobStatus, status_code=202)
+async def start_upload_job(file: UploadFile = File(...)):
+    """Start summarizing an uploaded document in the background."""
+    text = _extract_upload(file, await file.read())
+    return _start_job(text)
+
+
+@router.get("/jobs/{job_id}", response_model=JobStatus)
+def job_status(job_id: str):
+    """Poll a background job. `result` is set once `status` is "done"."""
+    job = jobs_service.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found or expired.")
+    return _job_status(job)
 
 
 @router.get("/history", response_model=list[HistoryItem])

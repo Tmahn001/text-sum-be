@@ -33,6 +33,17 @@ class SummarizeResponse(BaseModel):
     created_at: datetime | None = None
 
 
+class JobStatus(BaseModel):
+    """State of a background summarization job (see services/jobs.py)."""
+
+    id: str
+    status: str = Field(..., description="queued | running | done | error")
+    progress_done: int = 0
+    progress_total: int = 0
+    result: SummarizeResponse | None = None
+    error: str | None = None
+
+
 class HistoryItem(BaseModel):
     id: int
     input_preview: str = Field(..., description="First ~200 chars of the input.")
