@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     # Upper bound on how long the summary may be relative to the source, so short
     # inputs still get a fuller summary without exceeding the original text.
     summary_ratio: float = 0.75
+    # Length cap for each chunk's intermediate summary when a document is split.
+    # max_chunks x this must fit in one model window (8 x 120 < 1008) so the final
+    # map-reduce pass can run; shorter generations also make each chunk faster.
+    chunk_summary_max_length: int = 120
 
     # --- Entity / keyword extraction ---
     spacy_model: str = "en_core_web_sm"

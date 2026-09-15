@@ -16,6 +16,7 @@ Design notes (for the defense):
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable
 from functools import lru_cache
 
@@ -60,12 +61,13 @@ def _chunk_by_tokens(text: str, tokenizer, max_tokens: int) -> list[str]:
     return chunks
 
 
-def _summarize_one(pipe, text: str) -> str:
+def _summarize_one(pipe, text: str, max_length: int | None = None) -> str:
     # max_length/min_length are measured in generated tokens. We scale the target
     # to the input so the summary is fuller for long text but never longer than a
     # short source (summary_ratio caps it at a fraction of the original).
     input_len = len(pipe.tokenizer.encode(text, add_special_tokens=False))
-    max_len = min(settings.summary_max_length, max(60, int(input_len * settings.summary_ratio)))
+    cap = max_length or settings.summary_max_length
+    max_len = min(cap, max(60, int(input_len * settings.summary_ratio)))
     min_len = min(settings.summary_min_length, max(20, max_len // 2))
     result = pipe(
         text,
@@ -109,9 +111,20 @@ def summarize(text: str, on_progress: Callable[[int, int], None] | None = None) 
     logger.info("Summarizing in %d chunk(s) (of %d)", len(chunks), len(all_chunks))
     # +1 for the final map-reduce pass when there are several chunks.
     total = len(chunks) + (1 if len(chunks) > 1 else 0)
+    # Report the total up front so clients see "0 of N" instead of "0 of 0"
+    # while the first (slowest-feeling) chunk is still generating.
+    if on_progress:
+        on_progress(0, total)
+    # Intermediate summaries are kept short so they all fit in the final pass.
+    chunk_cap = settings.chunk_summary_max_length if len(chunks) > 1 else None
     chunk_summaries = []
     for chunk in chunks:
-        chunk_summaries.append(_summarize_one(pipe, chunk))
+        started = time.perf_counter()
+        chunk_summaries.append(_summarize_one(pipe, chunk, max_length=chunk_cap))
+        logger.info(
+            "Chunk %d/%d summarized in %.1fs",
+            len(chunk_summaries), len(chunks), time.perf_counter() - started,
+        )
         if on_progress:
             on_progress(len(chunk_summaries), total)
 
