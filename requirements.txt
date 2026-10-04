@@ -10,6 +10,12 @@ transformers==4.46.3
 torch==2.5.1                  # CPU build is fine for a demo; see README
 sentencepiece==0.2.0
 
+# --- Verification (sentence linking + faithfulness) ---
+# Embeddings locate the evidence; the NLI model (plain transformers, no extra
+# package) judges whether it entails the sentence. DeBERTa-v3's tokenizer needs
+# sentencepiece, already pinned above.
+sentence-transformers==3.3.1
+
 # --- Entity / keyword extraction ---
 spacy==3.8.2
 # The en_core_web_sm model is installed separately, see README:

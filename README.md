@@ -54,6 +54,44 @@ the architecture in the brief.
   never fails the whole request. Disambiguation pages are skipped.
 - A descriptive `User-Agent` is sent, per Wikipedia's API etiquette.
 
+### Verifiable summaries: source linking + faithfulness (`services/verification.py`)
+
+This is the answer to "why not just use ChatGPT?" — every summary sentence can be
+traced to the passages it came from and checked against them. `POST /api/verify`
+is a **separate** endpoint so the summary renders immediately and the (slower)
+checking arrives behind it; if it fails, the UI shows the plain summary.
+
+- **Two models, two different questions.** A sentence-embedding model
+  (`all-MiniLM-L6-v2`) answers *where did this come from*, by cosine similarity
+  over the source sentences. An **NLI** model (`cross-encoder/nli-deberta-v3-base`)
+  answers *does that passage actually back this up*. Both are needed: a sentence
+  can be topically close to a passage and still say something it does not support.
+- **Evidence, not the whole document.** Only the top `VERIFY_TOP_K` (default 2)
+  sentences become the NLI premise — the model caps at 512 tokens. Past 4
+  evidence sentences the premise starts getting truncated.
+- **"Unverified", never "wrong".** BART paraphrases heavily, and NLI scores many
+  valid paraphrases as neutral. A score below the threshold means *the evidence
+  we found doesn't clearly back this up*. The UI must never say "incorrect" or
+  "hallucinated" — overclaiming is the easy way to lose that argument at the panel.
+- **Threshold is a tunable, not a constant.** `VERIFY_THRESHOLD` starts at 0.5 and
+  the endpoint accepts a per-request `threshold`, so it can be tuned without a
+  redeploy. Tune it by reading the flagged *and* unflagged sentences from 10–15
+  varied documents and trying values between 0.3 and 0.7.
+- **Sentence indices are the contract.** The source is split and indexed once, so
+  the frontend's highlighting is unaffected by how the summarizer chunked the
+  document. spaCy does the splitting (not NLTK): the model is already loaded for
+  entity extraction, so there is no extra dependency and no `punkt` download, and
+  its parser handles "Prof." and "Fig. 3" better than punctuation rules.
+- **Memory.** MiniLM + DeBERTa add roughly 800MB on top of BART, which does **not**
+  fit the 2GB droplet. They therefore load on first use, cached for the process
+  (never per request); `VERIFY_WARMUP=1` loads them at startup where there is RAM
+  to spare. On a small server either raise the RAM or set
+  `VERIFY_NLI_MODEL=typeform/distilbert-base-uncased-mnli`, which is about half
+  the size for some accuracy.
+- **Evaluation data for Chapter 4.** Every request appends one JSON line to
+  `VERIFICATION_LOG_PATH` (sentence counts, unsupported count, mean entailment,
+  threshold, duration) — counts and scores only, never document text.
+
 ### Database: SQLite via SQLAlchemy
 - SQLite needs **zero setup** — the DB is a single file created on first run, ideal
   for a portable demo. Going through SQLAlchemy means switching to Postgres is a
@@ -75,9 +113,11 @@ backend/app/
 ├── schemas.py               # Pydantic request/response models
 ├── database.py              # SQLAlchemy engine + Submission model
 ├── routers/summarize.py     # endpoints + the merge pipeline
+├── routers/verify.py        # POST /api/verify
 └── services/
     ├── summarizer.py        # BART load + chunked map-reduce summarization
     ├── entities.py          # spaCy NER + keyword fallback + ranking
+    ├── verification.py      # sentence linking + NLI faithfulness scoring
     ├── wikipedia.py         # search -> summary retrieval, graceful failure
     └── extract_text.py      # .txt/.md/.pdf/.docx -> plain text
 ```

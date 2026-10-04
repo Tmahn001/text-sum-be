@@ -35,6 +35,25 @@ class Settings(BaseSettings):
     # map-reduce pass can run; shorter generations also make each chunk faster.
     chunk_summary_max_length: int = 120
 
+    # --- Verification (sentence linking + faithfulness) ---
+    # Finds which source sentences a summary sentence came from.
+    verify_embed_model: str = "all-MiniLM-L6-v2"
+    # Judges whether those sentences entail it. Must be an NLI checkpoint (the
+    # entailment label is read from its config). A smaller alternative that
+    # halves the memory cost: typeform/distilbert-base-uncased-mnli.
+    verify_nli_model: str = "cross-encoder/nli-deberta-v3-base"
+    # Evidence sentences per summary sentence. Beyond 4 the 512-token premise
+    # limit starts truncating the evidence.
+    verify_top_k: int = 2
+    # Entailment probability below which a sentence is marked unsupported.
+    # Tune against hand-read output (see README); overridable per request.
+    verify_threshold: float = 0.5
+    verify_nli_batch_size: int = 16
+    # Bound on source sentences compared per request; 0 disables the cap.
+    verify_max_source_sentences: int = 2000
+    # One JSON line per run, for the Chapter 4 evaluation. "" disables logging.
+    verification_log_path: str = "verification_log.jsonl"
+
     # --- Entity / keyword extraction ---
     spacy_model: str = "en_core_web_sm"
     # How many distinct entities to look up on Wikipedia per submission.

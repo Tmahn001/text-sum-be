@@ -53,6 +53,11 @@ def _get_nlp():
         ) from exc
 
 
+def get_nlp():
+    """Shared spaCy pipeline, loaded once and reused by other services."""
+    return _get_nlp()
+
+
 def _clean(term: str) -> str:
     return " ".join(term.split()).strip(" \t\n.,;:\"'()[]")
 

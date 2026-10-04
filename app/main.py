@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import get_settings
 from .database import init_db
-from .routers import summarize
+from .routers import summarize, verify
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
@@ -37,6 +37,7 @@ app.add_middleware(
 )
 
 app.include_router(summarize.router, prefix="/api", tags=["summarize"])
+app.include_router(verify.router, prefix="/api", tags=["verify"])
 
 
 @app.on_event("startup")
@@ -48,6 +49,12 @@ def on_startup() -> None:
         from .services.summarizer import warmup
 
         warmup()
+    # The verification models add ~800MB on top of BART, so they load on first
+    # use by default. Set VERIFY_WARMUP=1 only where there is RAM to spare.
+    if os.getenv("VERIFY_WARMUP") == "1":
+        from .services.verification import warmup as verify_warmup
+
+        verify_warmup()
 
 
 @app.get("/api/health", tags=["health"])
