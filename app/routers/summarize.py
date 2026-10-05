@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
-from ..database import SessionLocal, Submission, get_db
+from ..database import JobRecord, SessionLocal, Submission, get_db
 from ..schemas import (
     HistoryItem,
     JobStatus,
@@ -81,8 +81,32 @@ async def summarize_upload(
     file: UploadFile = File(...), db: Session = Depends(get_db)
 ):
     """Summarize an uploaded document (.txt, .md, .pdf, .docx)."""
-    text = _extract_upload(file, await file.read())
+    text = _extract_upload(file, await _read_capped(file))
     return _run_pipeline(text, db)
+
+
+async def _read_capped(file: UploadFile) -> bytes:
+    """Read an upload in chunks, refusing anything over the size limit.
+
+    Extraction holds the whole file plus its extracted text in memory, so an
+    oversized PDF can exhaust a small server before summarization even starts.
+    Reading chunk by chunk means we reject it without buffering it all first.
+    """
+    limit = settings.max_upload_bytes
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(256 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if limit > 0 and total > limit:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File is too large (limit {limit // (1024 * 1024)}MB).",
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def _extract_upload(file: UploadFile, data: bytes) -> str:
@@ -132,17 +156,37 @@ def start_text_job(payload: SummarizeRequest):
 @router.post("/jobs/upload", response_model=JobStatus, status_code=202)
 async def start_upload_job(file: UploadFile = File(...)):
     """Start summarizing an uploaded document in the background."""
-    text = _extract_upload(file, await file.read())
+    text = _extract_upload(file, await _read_capped(file))
     return _start_job(text)
 
 
 @router.get("/jobs/{job_id}", response_model=JobStatus)
-def job_status(job_id: str):
+def job_status(job_id: str, db: Session = Depends(get_db)):
     """Poll a background job. `result` is set once `status` is "done"."""
     job = jobs_service.get(job_id)
-    if not job:
+    if job:
+        return _job_status(job)
+
+    # Not in memory: either this process restarted (an out-of-memory kill mid
+    # summary is the usual cause) or the in-memory record aged out. The durable
+    # record says which, and still carries the result if the work finished.
+    row = db.get(JobRecord, job_id)
+    if not row:
         raise HTTPException(status_code=404, detail="Job not found or expired.")
-    return _job_status(job)
+
+    result = None
+    if row.submission_id:
+        submission = db.get(Submission, row.submission_id)
+        if submission:
+            result = _submission_response(submission)
+    return JobStatus(
+        id=row.id,
+        status=row.status,
+        progress_done=row.progress_done,
+        progress_total=row.progress_total,
+        result=result,
+        error=row.error,
+    )
 
 
 @router.get("/history", response_model=list[HistoryItem])
@@ -162,12 +206,8 @@ def history(limit: int = 20, db: Session = Depends(get_db)):
     ]
 
 
-@router.get("/history/{submission_id}", response_model=SummarizeResponse)
-def history_detail(submission_id: int, db: Session = Depends(get_db)):
-    """Return a full past result (summary + entities + context)."""
-    r = db.get(Submission, submission_id)
-    if not r:
-        raise HTTPException(status_code=404, detail="Submission not found.")
+def _submission_response(r: Submission) -> SummarizeResponse:
+    """Shape a stored submission as the pipeline's response."""
     return SummarizeResponse(
         id=r.id,
         input_text=r.input_text,
@@ -177,3 +217,12 @@ def history_detail(submission_id: int, db: Session = Depends(get_db)):
         model=r.model,
         created_at=r.created_at,
     )
+
+
+@router.get("/history/{submission_id}", response_model=SummarizeResponse)
+def history_detail(submission_id: int, db: Session = Depends(get_db)):
+    """Return a full past result (summary + entities + context)."""
+    r = db.get(Submission, submission_id)
+    if not r:
+        raise HTTPException(status_code=404, detail="Submission not found.")
+    return _submission_response(r)

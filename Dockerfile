@@ -8,7 +8,16 @@ ENV PYTHONUNBUFFERED=1 \
     # mount a volume over /models or you'll hide the baked-in weights.
     HF_HOME=/models \
     # Load the model at startup so the first real request is fast.
-    WARMUP_MODEL=1
+    WARMUP_MODEL=1 \
+    # --- Memory budget for a 1 vCPU / 2GB server ---
+    # One core: extra BLAS/OMP threads cost memory arenas and buy no throughput.
+    OMP_NUM_THREADS=1 \
+    MKL_NUM_THREADS=1 \
+    # glibc keeps a per-thread malloc arena (64MB each) and never returns much
+    # of it; capping the count keeps RSS close to what is actually live.
+    MALLOC_ARENA_MAX=2 \
+    # The fast tokenizers fork a thread pool per process — wasted here.
+    TOKENIZERS_PARALLELISM=false
 
 WORKDIR /app
 

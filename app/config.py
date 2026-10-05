@@ -35,20 +35,34 @@ class Settings(BaseSettings):
     # map-reduce pass can run; shorter generations also make each chunk faster.
     chunk_summary_max_length: int = 120
 
+    # --- Runtime (CPU/memory budget; see services/runtime.py) ---
+    # Store Linear weights as int8: ~3-4x less weight memory and usually faster
+    # on CPU, for a small accuracy cost. Set 0 to keep fp32 where RAM allows.
+    quantize_models: bool = True
+    # Threads per inference. 1 suits a single-core server; 0 leaves torch's default.
+    torch_num_threads: int = 1
+    # How long a request may wait for the single inference slot before giving up.
+    inference_timeout_seconds: int = 600
+    # Reject uploads larger than this before they are read into memory.
+    max_upload_bytes: int = 10 * 1024 * 1024
+
     # --- Verification (sentence linking + faithfulness) ---
     # Finds which source sentences a summary sentence came from.
     verify_embed_model: str = "all-MiniLM-L6-v2"
     # Judges whether those sentences entail it. Must be an NLI checkpoint (the
-    # entailment label is read from its config). A smaller alternative that
-    # halves the memory cost: typeform/distilbert-base-uncased-mnli.
-    verify_nli_model: str = "cross-encoder/nli-deberta-v3-base"
+    # entailment label is read from its config). distilroberta is the default
+    # because deberta-v3-base needs ~500MB more than a 2GB server has; where
+    # there is RAM, cross-encoder/nli-deberta-v3-base scores better.
+    verify_nli_model: str = "cross-encoder/nli-distilroberta-base"
     # Evidence sentences per summary sentence. Beyond 4 the 512-token premise
     # limit starts truncating the evidence.
     verify_top_k: int = 2
     # Entailment probability below which a sentence is marked unsupported.
     # Tune against hand-read output (see README); overridable per request.
     verify_threshold: float = 0.5
-    verify_nli_batch_size: int = 16
+    # Batch sizes trade memory for speed; these are sized for a 2GB server.
+    verify_nli_batch_size: int = 8
+    verify_embed_batch_size: int = 32
     # Bound on source sentences compared per request; 0 disables the cap.
     verify_max_source_sentences: int = 2000
     # One JSON line per run, for the Chapter 4 evaluation. "" disables logging.

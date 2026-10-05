@@ -92,6 +92,27 @@ checking arrives behind it; if it fails, the UI shows the plain summary.
   `VERIFICATION_LOG_PATH` (sentence counts, unsupported count, mean entailment,
   threshold, duration) — counts and scores only, never document text.
 
+### Background jobs, and surviving a restart
+
+Long summaries run as background jobs (`POST /api/jobs`, then poll
+`GET /api/jobs/{id}`) because a CPU-only summary takes minutes — longer than
+browsers and proxies keep a request open.
+
+The queue is in memory, so a restart used to leave the frontend polling an id
+nothing remembered, reported as the unhelpful *"Job not found or expired"*. Each
+status change is now mirrored to a `jobs` table:
+
+- A poll after a restart returns `status: "error"` explaining that the server
+  restarted (usually an out-of-memory kill) instead of a bare 404.
+- If the work had already finished, the result is read back from its stored
+  `Submission`, so the summary is not lost.
+- At startup, any job still marked queued/running belongs to the dead process
+  and is closed out; rows older than a week are deleted.
+- A genuinely unknown id still 404s.
+
+Progress counters stay in memory only: they change constantly, matter only while
+the process lives, and each write would be a disk hit on a small server.
+
 ### Database: SQLite via SQLAlchemy
 - SQLite needs **zero setup** — the DB is a single file created on first run, ideal
   for a portable demo. Going through SQLAlchemy means switching to Postgres is a
@@ -118,9 +139,49 @@ backend/app/
     ├── summarizer.py        # BART load + chunked map-reduce summarization
     ├── entities.py          # spaCy NER + keyword fallback + ranking
     ├── verification.py      # sentence linking + NLI faithfulness scoring
+    ├── runtime.py           # int8 quantization, 1-at-a-time inference, threads
     ├── wikipedia.py         # search -> summary retrieval, graceful failure
     └── extract_text.py      # .txt/.md/.pdf/.docx -> plain text
 ```
+
+## Memory budget (1 vCPU / 2GB droplet)
+
+Three transformer models on a 2GB box does not work in fp32 — the container was
+being OOM-killed mid-summary, which looked like a job hanging at "0 of 0".
+Everything below is in `services/runtime.py` and switchable by env var.
+
+| | fp32 | int8 (default) |
+|---|---|---|
+| distilbart-cnn-12-6 | ~1220 MB | ~470 MB |
+| all-MiniLM-L6-v2 | ~90 MB | ~60 MB |
+| NLI (nli-distilroberta-base) | ~330 MB | ~200 MB |
+| spaCy + torch runtime + uvicorn | ~300 MB | ~300 MB |
+| **total weights** | **~1.9 GB** | **~1.0 GB** |
+
+These are calculated from parameter counts, not measured — verify them against
+the `Peak memory after …` lines the service now logs on each model load.
+
+- **Dynamic int8 quantization** (`QUANTIZE_MODELS=1`). Linear layers are stored
+  as int8; embedding tables stay fp32, which is why the saving is ~2.6x rather
+  than 4x. CPU inference usually gets *faster*, since int8 matmuls move less
+  data. Set `QUANTIZE_MODELS=0` on a host with RAM to spare.
+- **One inference at a time.** Weights are shared between requests but
+  activations are not, so two concurrent generations are what actually blow the
+  limit. A process-wide slot serializes them; waiting longer than
+  `INFERENCE_TIMEOUT_SECONDS` returns a 503 rather than queueing forever.
+- **Smaller NLI model by default** (`nli-distilroberta-base` instead of
+  `nli-deberta-v3-base`): ~500 MB less, because DeBERTa-v3's 128k-token vocab
+  alone is ~390 MB of fp32 embeddings. Switch back where there is RAM.
+- **Single-threaded torch** plus `MALLOC_ARENA_MAX=2`, `OMP_NUM_THREADS=1` and
+  `TOKENIZERS_PARALLELISM=false` in the Dockerfile. On one core extra threads
+  add per-thread malloc arenas (64MB each, rarely returned) and buy nothing.
+- **Smaller batches** for NLI (8) and embeddings (32), which bounds activation
+  size on the 512-token premises.
+- **Upload cap** (`MAX_UPLOAD_BYTES`, 10MB). Extraction holds the file *and* its
+  text in memory, so oversized uploads are now refused with a 413 before being
+  read, instead of being buffered first.
+- **Verification models load on first use**, not at startup, so a deployment
+  that never calls `/api/verify` never pays for them.
 
 ## Trade-offs / limits (be ready to discuss these)
 

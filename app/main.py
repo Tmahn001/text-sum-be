@@ -43,6 +43,11 @@ app.include_router(verify.router, prefix="/api", tags=["verify"])
 @app.on_event("startup")
 def on_startup() -> None:
     init_db()
+    # Nothing is running yet, so any job the DB still calls queued/running died
+    # with the previous process. Close them out with a reason the UI can show.
+    from .services.jobs import recover_interrupted
+
+    recover_interrupted()
     # Set WARMUP_MODEL=1 to load BART at startup (slower boot, instant first
     # request). Left off by default so the server starts quickly.
     if os.getenv("WARMUP_MODEL") == "1":

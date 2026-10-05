@@ -45,7 +45,9 @@ def _get_nlp():
     import spacy
 
     try:
-        return spacy.load(settings.spacy_model)
+        # The lemmatizer's lookup tables are several MB and nothing here uses
+        # lemmas; NER, the tagger and the parser all stay.
+        return spacy.load(settings.spacy_model, exclude=["lemmatizer"])
     except OSError as exc:  # model not downloaded
         raise RuntimeError(
             f"spaCy model '{settings.spacy_model}' is not installed. Run:\n"

@@ -21,6 +21,7 @@ from collections.abc import Callable
 from functools import lru_cache
 
 from ..config import get_settings
+from .runtime import configure_torch, inference_slot, log_peak_memory, quantize
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -33,12 +34,17 @@ def _get_pipeline():
     # (e.g. in tests) doesn't pull in torch/transformers until it's needed.
     from transformers import pipeline
 
+    configure_torch()
     logger.info("Loading summarization model: %s", settings.summarizer_model)
-    return pipeline(
+    pipe = pipeline(
         "summarization",
         model=settings.summarizer_model,
         tokenizer=settings.summarizer_model,
     )
+    # int8 weights: BART is ~1.2GB in fp32, which alone fills most of a 2GB box.
+    pipe.model = quantize(pipe.model)
+    log_peak_memory("summarizer load")
+    return pipe
 
 
 def _chunk_by_tokens(text: str, tokenizer, max_tokens: int) -> list[str]:
@@ -69,13 +75,16 @@ def _summarize_one(pipe, text: str, max_length: int | None = None) -> str:
     cap = max_length or settings.summary_max_length
     max_len = min(cap, max(60, int(input_len * settings.summary_ratio)))
     min_len = min(settings.summary_min_length, max(20, max_len // 2))
-    result = pipe(
-        text,
-        max_length=max_len,
-        min_length=min_len,
-        do_sample=False,  # deterministic — important for a reproducible demo
-        truncation=True,
-    )
+    # One generation at a time process-wide: concurrent generations are what
+    # spike memory enough to get the container killed.
+    with inference_slot("summary"):
+        result = pipe(
+            text,
+            max_length=max_len,
+            min_length=min_len,
+            do_sample=False,  # deterministic — important for a reproducible demo
+            truncation=True,
+        )
     return result[0]["summary_text"].strip()
 
 

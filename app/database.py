@@ -55,6 +55,30 @@ class Submission(Base):
         return text[:200] + ("…" if len(text) > 200 else "")
 
 
+class JobRecord(Base):
+    """Durable status for a background job.
+
+    The job queue itself lives in memory (see services/jobs.py), but that means
+    a restart — an out-of-memory kill, a redeploy — leaves the frontend polling
+    an id nothing remembers, which it can only report as "not found". Mirroring
+    each status change here lets a poll after a restart say what actually
+    happened, and hand back the result when the work had already finished.
+    """
+
+    __tablename__ = "jobs"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    status: Mapped[str] = mapped_column(String(16), default="queued")
+    progress_done: Mapped[int] = mapped_column(Integer, default=0)
+    progress_total: Mapped[int] = mapped_column(Integer, default=0)
+    # Set once the pipeline has persisted its Submission; the result is read
+    # back from there rather than duplicated.
+    submission_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 def init_db() -> None:
     """Create tables on startup if they don't exist."""
     Base.metadata.create_all(bind=engine)

@@ -31,6 +31,7 @@ from pathlib import Path
 
 from ..config import get_settings
 from .entities import get_nlp
+from .runtime import configure_torch, inference_slot, log_peak_memory, quantize
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -48,8 +49,14 @@ def _get_embedder():
     """Load and cache the sentence-embedding model."""
     from sentence_transformers import SentenceTransformer
 
+    configure_torch()
     logger.info("Loading embedding model: %s", settings.verify_embed_model)
-    return SentenceTransformer(settings.verify_embed_model)
+    model = SentenceTransformer(settings.verify_embed_model)
+    # Quantize the underlying transformer, leaving the pooling layers alone.
+    first = model[0]
+    if hasattr(first, "auto_model"):
+        first.auto_model = quantize(first.auto_model)
+    return model
 
 
 @lru_cache(maxsize=1)
@@ -57,11 +64,18 @@ def _get_nli():
     """Load and cache the NLI model, its tokenizer, and its entailment index."""
     from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
+    configure_torch()
     logger.info("Loading NLI model: %s", settings.verify_nli_model)
     tokenizer = AutoTokenizer.from_pretrained(settings.verify_nli_model)
     model = AutoModelForSequenceClassification.from_pretrained(
         settings.verify_nli_model
     ).eval()
+    # Read the label order *before* quantizing: the wrapper keeps .config, but
+    # read it from the source model to be safe across torch versions.
+    id2label = dict(model.config.id2label)
+    model = quantize(model)
+    model.config.id2label = id2label
+    log_peak_memory("verification load")
     # Read the entailment class index from the model config rather than assuming
     # a label order — it differs between NLI checkpoints.
     entail_index = next(
@@ -144,7 +158,7 @@ def _entailment_scores(premises: list[str], hypotheses: list[str]) -> list[float
             # evidence sentences are used as the premise, never the document.
             max_length=512,
         )
-        with torch.no_grad():
+        with torch.no_grad(), inference_slot("verification"):
             probs = torch.softmax(model(**batch).logits, dim=-1)
         scores.extend(probs[:, entail_index].tolist())
     return scores
@@ -218,10 +232,14 @@ def verify_summary(
     import torch
     from sentence_transformers import util
 
-    pool_emb = embedder.encode(
-        [p[2] for p in pool], convert_to_tensor=True, batch_size=64
-    )
-    summ_emb = embedder.encode(summ_sents, convert_to_tensor=True)
+    batch_size = settings.verify_embed_batch_size
+    with inference_slot("verification"):
+        pool_emb = embedder.encode(
+            [p[2] for p in pool], convert_to_tensor=True, batch_size=batch_size
+        )
+        summ_emb = embedder.encode(
+            summ_sents, convert_to_tensor=True, batch_size=batch_size
+        )
     sims = util.cos_sim(summ_emb, pool_emb)
 
     premises: list[str] = []
