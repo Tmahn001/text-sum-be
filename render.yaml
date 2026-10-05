@@ -1,0 +1,60 @@
+# Render blueprint — https://render.com/docs/blueprint-spec
+#
+# Deploy: Render dashboard -> New -> Blueprint -> pick this repo. Render reads
+# this file and creates the service; later pushes to `main` redeploy it.
+#
+# Why Docker and not Render's native Python runtime: the Dockerfile installs the
+# CPU-only torch wheel (the default PyPI one pulls a multi-GB CUDA build) and
+# bakes the summarization model into the image, so a cold start does no network
+# I/O. See README.
+services:
+  - type: web
+    name: text-sum-backend
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    # Frankfurt to sit near the existing deployment and its users.
+    region: frankfurt
+    # 2GB / 1 CPU. Do NOT drop to free or starter (512MB): the summarizer alone
+    # needs ~470MB of int8 weights plus ~250MB of torch runtime, and would be
+    # OOM-killed on boot. 4GB (pro) is what /api/verify needs — see VERIFY_ENABLED.
+    plan: standard
+    healthCheckPath: /api/health
+    autoDeploy: true
+    # Render's filesystem is wiped on every deploy, so submissions.db and the
+    # evaluation log live on a persistent disk instead.
+    disk:
+      name: data
+      mountPath: /app/data
+      sizeGB: 1
+    envVars:
+      # Distilled model: ~2x faster than bart-large-cnn on CPU for a small
+      # quality cost. Must match the Dockerfile build arg to stay baked in.
+      - key: SUMMARIZER_MODEL
+        value: sshleifer/distilbart-cnn-12-6
+      # int8 Linear weights: ~1220MB -> ~470MB for the summarizer.
+      - key: QUANTIZE_MODELS
+        value: "1"
+      # One CPU on this plan; extra threads only add memory arenas.
+      - key: TORCH_NUM_THREADS
+        value: "1"
+      # Off, unlike the droplet: loading the model takes ~30-60s and Render
+      # waits for the port to bind before the deploy goes live. The first
+      # summary pays the load cost instead, inside a background job.
+      - key: WARMUP_MODEL
+        value: "0"
+      # The embedder + NLI models add ~260MB on top of the summarizer, which
+      # does not fit this plan. Set to "1" only on a 4GB (pro) instance; the
+      # frontend falls back to the plain summary while it is off.
+      - key: VERIFY_ENABLED
+        value: "0"
+      # Both on the mounted disk, so they survive deploys.
+      - key: DATABASE_URL
+        value: sqlite:////app/data/submissions.db
+      - key: VERIFICATION_LOG_PATH
+        value: /app/data/verification_log.jsonl
+      # Pydantic parses this as a JSON list — a comma-separated string fails.
+      # Set the real frontend origins in the dashboard; sync: false keeps the
+      # blueprint from overwriting them on every deploy.
+      - key: CORS_ORIGINS
+        sync: false

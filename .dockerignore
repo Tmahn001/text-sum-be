@@ -16,3 +16,14 @@ __pycache__/
 .cache/
 *.log
 .DS_Store
+
+# Runtime data: the SQLite DB and evaluation log live on a mounted volume, and
+# a local copy must never be baked into the image.
+data/
+*.jsonl
+
+# Not needed at runtime; keeps the (already large) image smaller.
+.git/
+.github/
+.vscode/
+README.md

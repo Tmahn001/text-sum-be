@@ -39,4 +39,10 @@ RUN python -c "from transformers import pipeline; pipeline('summarization', mode
 COPY . .
 
 EXPOSE 8000
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+# Shell form on purpose: Render (and most PaaS hosts) inject the port to listen
+# on as $PORT and will fail the deploy if nothing binds it. Falls back to 8000,
+# so docker-compose and `docker run` keep working unchanged.
+# One worker, deliberately: the models are the memory budget, and the job queue
+# lives in this process (see services/jobs.py).
+CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1

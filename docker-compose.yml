@@ -6,6 +6,17 @@ services:
         SUMMARIZER_MODEL: ${SUMMARIZER_MODEL:-sshleifer/distilbart-cnn-12-6}
     image: contextual-summarizer-backend
     restart: unless-stopped
+    # Capped 2026-10-05, after repeated OOM kills starved the shared droplet and
+    # took down unrelated apps (redis, star_ride) via the kernel OOM killer.
+    # cgroups now kill and restart just this container, containing the damage.
+    # 1536m was set while the models were fp32; with QUANTIZE_MODELS=1 and
+    # verification off, the peak should be ~700-800MB — check the "Peak memory"
+    # log line and right-size down, leaving ~300MB of headroom.
+    mem_limit: 1536m
+    # Leaving memswap_limit unset lets the container use host swap: a spike
+    # becomes slow instead of fatal. Set it equal to mem_limit to forbid swap
+    # and fail fast instead — swapping during inference is very slow.
+    # memswap_limit: 1536m
     ports:
       - "8791:8000"
     environment:
@@ -13,15 +24,16 @@ services:
       WARMUP_MODEL: "1"
       # int8 weights; set "0" only on a host with RAM to spare.
       QUANTIZE_MODELS: "1"
+      # /api/verify off here: the embedder + NLI models add ~260MB (int8) on
+      # top of the summarizer, which this box cannot hold all at once.
+      # Summarize, entities and history keep working. Set "1" and raise
+      # mem_limit to enable it.
+      VERIFY_ENABLED: "0"
       TORCH_NUM_THREADS: "1"
       DATABASE_URL: sqlite:////app/data/submissions.db
       CORS_ORIGINS: ${CORS_ORIGINS:-["http://localhost:5173", "https://text-sum.vercel.app"]}
     volumes:
       - ./data:/app/data
-    # This droplet also hosts other projects. Uncomment to cap this container so
-    # a runaway summary gets it killed instead of its neighbours — check the
-    # logged peak first, since too low a cap just moves the OOM kills here.
-    # mem_limit: 1500m
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
       interval: 30s

@@ -47,6 +47,11 @@ class Settings(BaseSettings):
     max_upload_bytes: int = 10 * 1024 * 1024
 
     # --- Verification (sentence linking + faithfulness) ---
+    # Kill-switch for /api/verify. Its models add ~260MB (int8) on top of BART,
+    # so on a memory-capped server it can be turned off without a code change:
+    # the endpoint then returns 503 immediately and loads nothing. The frontend
+    # falls back to the plain summary.
+    verify_enabled: bool = True
     # Finds which source sentences a summary sentence came from.
     verify_embed_model: str = "all-MiniLM-L6-v2"
     # Judges whether those sentences entail it. Must be an NLI checkpoint (the

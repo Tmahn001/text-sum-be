@@ -9,16 +9,28 @@ import logging
 
 from fastapi import APIRouter, HTTPException
 
+from ..config import get_settings
 from ..schemas import VerifyRequest, VerifyResponse
 from ..services import verification as verification_service
 
 logger = logging.getLogger(__name__)
+settings = get_settings()
 router = APIRouter()
 
 
 @router.post("/verify", response_model=VerifyResponse)
 def verify(payload: VerifyRequest):
     """Link each summary sentence to its evidence and flag unsupported ones."""
+    if not settings.verify_enabled:
+        # Return before touching the models: the point of the switch is to keep
+        # them out of memory on a constrained server.
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Verification is disabled on this server "
+                "(not enough memory for all models)."
+            ),
+        )
     try:
         return verification_service.verify_summary(
             source=payload.source,

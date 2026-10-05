@@ -113,6 +113,13 @@ status change is now mirrored to a `jobs` table:
 Progress counters stay in memory only: they change constantly, matter only while
 the process lives, and each write would be a disk hit on a small server.
 
+A finished job keeps its full input, summary and context in memory, so a
+background thread sweeps them every 5 minutes rather than only when the next
+submission arrives — otherwise a quiet server holds that memory for the full
+hour-long TTL. `/api/verify` can also be switched off entirely with
+`VERIFY_ENABLED=0`: the route 503s without loading any model, which is what the
+2GB deployment runs with.
+
 ### Database: SQLite via SQLAlchemy
 - SQLite needs **zero setup** — the DB is a single file created on first run, ideal
   for a portable demo. Going through SQLAlchemy means switching to Postgres is a
@@ -143,6 +150,43 @@ backend/app/
     ├── wikipedia.py         # search -> summary retrieval, graceful failure
     └── extract_text.py      # .txt/.md/.pdf/.docx -> plain text
 ```
+
+## Deploying to Render
+
+[`render.yaml`](render.yaml) is a blueprint: **New → Blueprint → this repo**, and
+Render creates the service. It asks for `CORS_ORIGINS` (marked `sync: false`),
+which must be a **JSON list**, not a comma-separated string:
+
+```
+["https://text-sum.vercel.app","http://localhost:5173"]
+```
+
+Then point the frontend at the service URL by setting `VITE_API_BASE` to
+`https://<service>.onrender.com` in Vercel, and redeploy it.
+
+Things that will bite you otherwise:
+
+- **Pick the 2GB plan (`standard`).** Free and Starter have 512MB. The
+  summarizer needs ~470MB of int8 weights plus ~250MB of torch runtime, so it is
+  killed on load there — not slow, dead. `/api/verify` needs 4GB (`pro`); it is
+  off by default via `VERIFY_ENABLED=0`.
+- **`$PORT` is mandatory.** Render injects the port and fails the deploy if
+  nothing binds it, so the Dockerfile's `CMD` is in shell form and expands
+  `${PORT:-8000}`. The fallback keeps docker-compose working unchanged.
+- **The filesystem is wiped on every deploy.** `submissions.db` and
+  `verification_log.jsonl` therefore live on the persistent disk mounted at
+  `/app/data`. Note the four slashes in `sqlite:////app/data/...` — three means
+  a relative path, which would quietly reset your history and Chapter 4 data on
+  each deploy.
+- **`WARMUP_MODEL=0` here**, unlike the droplet. Render waits for the port to
+  bind before routing traffic, and loading the model first takes 30-60s. The
+  first summary pays that cost instead, inside a background job.
+- **The build is slow** (~15-25 min): it installs the CPU torch wheel and bakes
+  the model into the image. That is the trade for cold starts that need no
+  network. Deploys restart the process, so in-flight jobs are closed out with
+  the "server restarted" message rather than a confusing 404.
+- **One worker, deliberately.** The job queue lives in the process; a second
+  worker would double the model memory and poll jobs it knows nothing about.
 
 ## Memory budget (1 vCPU / 2GB droplet)
 

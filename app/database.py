@@ -7,8 +7,10 @@ with no code changes, since we go through SQLAlchemy.
 """
 import json
 from datetime import datetime
+from pathlib import Path
 
 from sqlalchemy import DateTime, Integer, String, Text, create_engine
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 from .config import get_settings
@@ -20,6 +22,14 @@ settings = get_settings()
 connect_args = (
     {"check_same_thread": False} if settings.database_url.startswith("sqlite") else {}
 )
+
+# SQLite will not create missing directories: pointing DATABASE_URL at a mounted
+# volume (sqlite:////app/data/...) fails with "unable to open database file" if
+# the mount is absent, which on a PaaS looks like an unexplained crash loop.
+_url = make_url(settings.database_url)
+if _url.drivername.startswith("sqlite") and _url.database not in (None, ":memory:"):
+    Path(_url.database).parent.mkdir(parents=True, exist_ok=True)
+
 engine = create_engine(settings.database_url, connect_args=connect_args)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
