@@ -32,9 +32,24 @@ RUN pip install --no-cache-dir torch==2.5.1 --index-url https://download.pytorch
 # Bake the summarization model into the image for fast, offline container starts.
 # Override at build time for the larger model:
 #   docker build --build-arg SUMMARIZER_MODEL=facebook/bart-large-cnn .
+# Note: Render (and similar hosts) pass service environment variables in as
+# build args, so a wrong value in the dashboard lands here and breaks the build.
 ARG SUMMARIZER_MODEL=sshleifer/distilbart-cnn-12-6
 ENV SUMMARIZER_MODEL=${SUMMARIZER_MODEL}
-RUN python -c "from transformers import pipeline; pipeline('summarization', model='${SUMMARIZER_MODEL}')"
+# The extractive backend needs no model at all, so skip the ~1GB download for it.
+ARG SUMMARIZER_BACKEND=abstractive
+ENV SUMMARIZER_BACKEND=${SUMMARIZER_BACKEND}
+RUN set -eu; \
+    case "${SUMMARIZER_MODEL}" in \
+      extractive|abstractive) \
+        echo "ERROR: SUMMARIZER_MODEL='${SUMMARIZER_MODEL}' is a SUMMARIZER_BACKEND value, not a model id. Set SUMMARIZER_BACKEND instead; SUMMARIZER_MODEL must be a HuggingFace model id." >&2; \
+        exit 1;; \
+    esac; \
+    if [ "${SUMMARIZER_BACKEND}" = "extractive" ]; then \
+      echo "SUMMARIZER_BACKEND=extractive: skipping model download."; \
+    else \
+      python -c "from transformers import pipeline; pipeline('summarization', model='${SUMMARIZER_MODEL}')"; \
+    fi
 
 COPY . .
 
