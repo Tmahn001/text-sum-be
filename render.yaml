@@ -28,10 +28,28 @@ services:
       mountPath: /app/data
       sizeGB: 1
     envVars:
+      # DEMO MODE. "extractive" loads no transformer at all: answers are
+      # instant, memory stays ~150MB, and the service cannot be OOM-killed on a
+      # 512MB instance. It picks the most informative sentences rather than
+      # generating new text, so it is NOT the abstractive method the thesis
+      # defends — the API reports "extractive (frequency-based)" as the model so
+      # this is never passed off as BART. Switch to "abstractive" once the
+      # instance has 2GB (plan: standard below).
+      - key: SUMMARIZER_BACKEND
+        value: extractive
       # Distilled model: ~2x faster than bart-large-cnn on CPU for a small
       # quality cost. Must match the Dockerfile build arg to stay baked in.
+      # Only used when SUMMARIZER_BACKEND=abstractive.
       - key: SUMMARIZER_MODEL
         value: sshleifer/distilbart-cnn-12-6
+      # Greedy decoding: roughly 4x faster than the models' default 4 beams,
+      # with slightly clumsier phrasing. Raise to 4 for the written-up results.
+      - key: SUMMARIZER_NUM_BEAMS
+        value: "1"
+      # Fewer chunks per document = fewer generation passes. 2 covers the start
+      # and end of a long document; 8 is the quality default.
+      - key: MAX_CHUNKS
+        value: "2"
       # int8 Linear weights: ~1220MB -> ~470MB for the summarizer.
       - key: QUANTIZE_MODELS
         value: "1"

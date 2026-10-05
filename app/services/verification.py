@@ -30,7 +30,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from ..config import get_settings
-from .entities import get_nlp
+from .entities import get_nlp, split_sentences
 from .runtime import configure_torch, inference_slot, log_peak_memory, quantize
 
 logger = logging.getLogger(__name__)
@@ -39,10 +39,6 @@ settings = get_settings()
 # Model loading is slow and not thread-safe; serialize it across requests.
 _load_lock = threading.Lock()
 _log_lock = threading.Lock()
-
-# spaCy refuses very long strings, so sentence splitting runs block by block.
-_MAX_BLOCK_CHARS = 90_000
-
 
 @lru_cache(maxsize=1)
 def _get_embedder():
@@ -89,55 +85,6 @@ def _get_nli():
             "Set VERIFY_NLI_MODEL to an NLI checkpoint."
         )
     return tokenizer, model, entail_index
-
-
-def split_sentences(text: str) -> list[str]:
-    """Split text into sentences with spaCy.
-
-    spaCy rather than NLTK: the model is already loaded for entity extraction
-    (no extra dependency, no punkt download), and its parser handles
-    abbreviations like "Prof." and "Fig. 3" better than punctuation rules.
-    """
-    text = (text or "").strip()
-    if not text:
-        return []
-
-    nlp = get_nlp()
-    # Only the tokenizer and parser are needed for sentence boundaries; skipping
-    # the rest (NER, tagger, lemmatizer) makes this several times faster.
-    keep = {"tok2vec", "transformer", "parser", "senter"}
-    disable = [name for name in nlp.pipe_names if name not in keep]
-
-    sentences: list[str] = []
-    with nlp.select_pipes(disable=disable):
-        for doc in nlp.pipe(_blocks(text)):
-            sentences.extend(s.text.strip() for s in doc.sents if s.text.strip())
-    return sentences
-
-
-def _blocks(text: str) -> list[str]:
-    """Break very long text into parse-sized blocks, preferring line breaks."""
-    if len(text) <= _MAX_BLOCK_CHARS:
-        return [text]
-
-    blocks: list[str] = []
-    current = ""
-    for line in text.splitlines(keepends=True):
-        # A single line longer than the limit is hard-split; nothing else to do.
-        while len(line) > _MAX_BLOCK_CHARS:
-            if current:
-                blocks.append(current)
-                current = ""
-            blocks.append(line[:_MAX_BLOCK_CHARS])
-            line = line[_MAX_BLOCK_CHARS:]
-        if len(current) + len(line) > _MAX_BLOCK_CHARS:
-            blocks.append(current)
-            current = line
-        else:
-            current += line
-    if current.strip():
-        blocks.append(current)
-    return blocks
 
 
 def _entailment_scores(premises: list[str], hypotheses: list[str]) -> list[float]:

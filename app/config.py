@@ -17,6 +17,17 @@ class Settings(BaseSettings):
     # sshleifer/distilbart-cnn-12-6 is ~2x smaller/faster with a small quality
     # drop — a good choice for a laptop demo. Swap via SUMMARIZER_MODEL env var.
     summarizer_model: str = "facebook/bart-large-cnn"
+    # "abstractive" runs the BART/T5 model. "extractive" skips transformers
+    # entirely and picks the most informative sentences — instant, ~150MB total,
+    # and it cannot be OOM-killed. It is NOT what the thesis defends (extractive
+    # methods only copy sentences), so keep it for demos on tiny instances and
+    # say so if asked. The /api/summarize response reports which one ran.
+    summarizer_backend: str = "abstractive"
+    # Sentences the extractive backend keeps.
+    extractive_sentences: int = 5
+    # Beam search width. 1 (greedy) is ~4x faster on CPU with slightly clumsier
+    # phrasing; 4 is what the model configs default to. Deterministic either way.
+    summarizer_num_beams: int = 1
     # BART's positional embeddings cap the encoder at 1024 tokens. Longer inputs
     # are split into chunks (see summarizer.py).
     max_input_tokens: int = 1024

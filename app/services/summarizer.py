@@ -16,7 +16,10 @@ Design notes (for the defense):
 from __future__ import annotations
 
 import logging
+import math
+import re
 import time
+from collections import Counter
 from collections.abc import Callable
 from functools import lru_cache
 
@@ -25,6 +28,57 @@ from .runtime import configure_torch, inference_slot, log_peak_memory, quantize
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+
+# Set when the model could not be loaded and the extractive backend stood in,
+# so the API can report honestly which summarizer produced a result.
+_fell_back = False
+
+# Enough to stop function words dominating the frequency counts. A full stopword
+# list would mean another dependency for a fallback path.
+_STOPWORDS = frozenset(
+    """a an and are as at be been but by for from had has have he her his in into is it
+    its of on or she that the their them they this to was were which who will with would
+    about after all also any can could do does more most no not one other our out over
+    said so some such than then there these those up what when where while you your""".split()
+)
+
+
+def active_model_name() -> str:
+    """What actually produced the last summary — the model, or the fallback."""
+    if settings.summarizer_backend == "extractive" or _fell_back:
+        return "extractive (frequency-based)"
+    return settings.summarizer_model
+
+
+def _extractive_summary(text: str, max_sentences: int) -> str:
+    """Pick the most informative sentences, kept in document order.
+
+    Scores each sentence by the summed frequency of its content words, divided
+    by the square root of its length so long sentences don't simply win. No
+    transformer, no torch: this is the path that always survives a 512MB box.
+    """
+    from .entities import split_sentences
+
+    sentences = split_sentences(text)
+    if len(sentences) <= max_sentences:
+        return " ".join(sentences)
+
+    words_per_sentence = [
+        [w for w in re.findall(r"[a-z0-9']+", s.lower()) if w not in _STOPWORDS and len(w) > 2]
+        for s in sentences
+    ]
+    frequencies = Counter(w for words in words_per_sentence for w in words)
+
+    scored = []
+    for i, words in enumerate(words_per_sentence):
+        if not words:
+            continue
+        score = sum(frequencies[w] for w in words) / math.sqrt(len(words))
+        scored.append((score, i))
+
+    keep = sorted(i for _, i in sorted(scored, reverse=True)[:max_sentences])
+    return " ".join(sentences[i] for i in keep)
 
 
 @lru_cache(maxsize=1)
@@ -83,6 +137,9 @@ def _summarize_one(pipe, text: str, max_length: int | None = None) -> str:
             max_length=max_len,
             min_length=min_len,
             do_sample=False,  # deterministic — important for a reproducible demo
+            # Greedy by default: beam search costs roughly its width in time,
+            # which dominates on a CPU-only host.
+            num_beams=settings.summarizer_num_beams,
             truncation=True,
         )
     return result[0]["summary_text"].strip()
@@ -113,7 +170,30 @@ def summarize(text: str, on_progress: Callable[[int, int], None] | None = None) 
     if not text:
         return ""
 
-    pipe = _get_pipeline()
+    global _fell_back
+    if settings.summarizer_backend == "extractive":
+        logger.info("Summarizing extractively (abstractive backend disabled)")
+        summary = _extractive_summary(text, settings.extractive_sentences)
+        if on_progress:
+            on_progress(1, 1)
+        return summary
+
+    try:
+        pipe = _get_pipeline()
+    except Exception as exc:  # noqa: BLE001 — a demo should degrade, not fail
+        # Typically the weights are missing or too large for the instance. An
+        # actual OOM kill cannot be caught here: the process just dies.
+        logger.warning(
+            "Could not load %s (%s); falling back to extractive summarization",
+            settings.summarizer_model, exc,
+        )
+        _fell_back = True
+        summary = _extractive_summary(text, settings.extractive_sentences)
+        if on_progress:
+            on_progress(1, 1)
+        return summary
+    _fell_back = False
+
     all_chunks = _chunk_by_tokens(text, pipe.tokenizer, settings.max_input_tokens)
     chunks = _sample_evenly(all_chunks, settings.max_chunks)
 

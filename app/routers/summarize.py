@@ -47,11 +47,15 @@ def _run_pipeline(text: str, db: Session, on_progress=None) -> SummarizeResponse
     entities = entities_service.extract_entities(text)
     context = wikipedia_service.fetch_context(entities)
 
+    # Report what actually ran: the configured model, or the extractive
+    # fallback if the model could not be loaded.
+    model_name = summarizer_service.active_model_name()
+
     # 4. Persist for the history feature.
     submission = Submission(
         input_text=text,
         summary=summary,
-        model=settings.summarizer_model,
+        model=model_name,
         entities_json=json.dumps(entities),
         context_json=json.dumps(context),
     )
@@ -65,7 +69,7 @@ def _run_pipeline(text: str, db: Session, on_progress=None) -> SummarizeResponse
         summary=summary,
         entities=entities,
         context=context,
-        model=settings.summarizer_model,
+        model=model_name,
         created_at=submission.created_at,
     )
 

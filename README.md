@@ -151,6 +151,30 @@ backend/app/
     └── extract_text.py      # .txt/.md/.pdf/.docx -> plain text
 ```
 
+## Demo mode: making it fast on a tiny instance
+
+A 512MB host cannot run BART at all, and a 1-CPU host generates slowly. Three
+settings trade summary quality for speed, in descending order of effect:
+
+| Setting | Effect | Cost |
+|---|---|---|
+| `SUMMARIZER_BACKEND=extractive` | **Instant** (~1ms), no transformer, ~150MB total, cannot be OOM-killed | Copies sentences instead of generating text |
+| `SUMMARIZER_NUM_BEAMS=1` | ~4x faster generation | Slightly clumsier phrasing |
+| `MAX_CHUNKS=2` | Fewer generation passes per document | Only covers the start and end of a long document |
+
+**Be straight about the extractive backend at the defense.** It scores sentences
+by content-word frequency and returns the best ones in document order — the
+*extractive* approach Chapter 2 argues against, not abstractive summarization.
+The API reports `"extractive (frequency-based)"` in the `model` field precisely
+so a demo cannot pass it off as BART, and the entity extraction and Wikipedia
+retrieval around it are unchanged. If asked: the method is the same pipeline, with
+the generation step swapped out because the demo instance has 512MB of RAM.
+
+The abstractive path also falls back to it automatically if the model cannot be
+loaded, so a presentation degrades instead of showing an error. A real
+out-of-memory kill cannot be caught in-process, which is why the extractive
+backend is set explicitly rather than relied on as a safety net.
+
 ## Deploying to Render
 
 [`render.yaml`](render.yaml) is a blueprint: **New → Blueprint → this repo**, and
